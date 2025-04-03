@@ -1,17 +1,18 @@
 // eslint-disable-next-line filenames/match-regex
+import { AnchorProvider, BN, Wallet } from '@coral-xyz/anchor'
+import NodeWallet from '@coral-xyz/anchor/dist/cjs/nodewallet'
+import { sendInstructions } from '@helium/spl-utils'
 import {
   Connection,
   Keypair,
   PublicKey,
-  Transaction,
-  sendAndConfirmTransaction
+  TransactionInstruction
 } from '@solana/web3.js'
 import Squads from '@sqds/sdk'
-import {createIdlUpgradeInstruction} from './createIdlUpgradeInstruction'
-import {createProgramUpgradeInstruction} from './createProgramUpgradeInstruction'
-import NodeWallet from '@coral-xyz/anchor/dist/cjs/nodewallet'
-import {getTxPDA} from './pda'
-import {BN} from '@coral-xyz/anchor'
+import { createIdlUpgradeInstruction } from './createIdlUpgradeInstruction'
+import { createProgramUpgradeInstruction } from './createProgramUpgradeInstruction'
+import { createResizeAccountInstruction } from './createResizeAccountInstruction'
+import { getIDLPDA, getTxPDA } from './pda'
 
 export const createProgramUpgrade = async ({
   multisig,
@@ -41,10 +42,21 @@ export const createProgramUpgrade = async ({
     }
   )
 
-  const instructions = [
+  const idlPDA = await getIDLPDA(programId)
+  const currIdlSize = (await connection.getAccountInfo(idlPDA))!.data.length
+  const bufferSize = (await connection.getAccountInfo(buffer))!.data.length
+
+  const instructions: TransactionInstruction[] = []
+  // Add some padding in there for the IDL metadata
+  if ((currIdlSize - 200) < bufferSize) {
+    const resizeAccountIx = await createResizeAccountInstruction(programId, wallet.publicKey)
+    instructions.push(resizeAccountIx)
+  }
+
+  instructions.push(
     await createIdlUpgradeInstruction(programId, idlBuffer, authority),
     await createProgramUpgradeInstruction(programId, buffer, authority, spill)
-  ]
+  )
 
   const nextTransactionIndex = await squads.getNextTransactionIndex(multisig)
   const [transactionPDA] = getTxPDA(
@@ -64,11 +76,14 @@ export const createProgramUpgrade = async ({
     await squads.buildApproveTransaction(multisig, transactionPDA)
   ]
 
-  const tx = new Transaction()
-  tx.feePayer = wallet.publicKey
-  tx.recentBlockhash = (await connection.getLatestBlockhash()).blockhash
-  tx.add(...realIxns)
-  const txid = await sendAndConfirmTransaction(connection, tx, [wallet])
+  const txid = await sendInstructions(
+    new AnchorProvider(
+      connection,
+      new Wallet(wallet),
+      AnchorProvider.defaultOptions()
+    ),
+    realIxns
+  )
 
   console.log(
     `Successfully created program upgrade for MS_PDA ${multisig.toString()} https://explorer.solana.com/tx/${txid}`
