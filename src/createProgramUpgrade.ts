@@ -49,7 +49,7 @@ export const createProgramUpgrade = async ({
   const instructions: TransactionInstruction[] = []
   // Add some padding in there for the IDL metadata
   if ((currIdlSize - 200) < bufferSize) {
-    const resizeAccountIx = await createResizeAccountInstruction(programId, wallet.publicKey)
+    const resizeAccountIx = await createResizeAccountInstruction(programId, authority)
     instructions.push(resizeAccountIx)
   }
 
