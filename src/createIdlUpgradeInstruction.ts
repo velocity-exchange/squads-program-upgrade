@@ -1,5 +1,5 @@
 import {PublicKey, TransactionInstruction} from '@solana/web3.js'
-import {idlAddress} from '@project-serum/anchor/dist/cjs/idl'
+import {idlAddress} from '@coral-xyz/anchor/dist/cjs/idl'
 
 export async function createIdlUpgradeInstruction(
   programId: PublicKey,

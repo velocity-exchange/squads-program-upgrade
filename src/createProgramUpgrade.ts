@@ -9,9 +9,9 @@ import {
 import Squads from '@sqds/sdk'
 import {createIdlUpgradeInstruction} from './createIdlUpgradeInstruction'
 import {createProgramUpgradeInstruction} from './createProgramUpgradeInstruction'
-import NodeWallet from '@project-serum/anchor/dist/cjs/nodewallet'
+import NodeWallet from '@coral-xyz/anchor/dist/cjs/nodewallet'
 import {getTxPDA} from './pda'
-import {BN} from '@project-serum/anchor'
+import {BN} from '@coral-xyz/anchor'
 
 export const createProgramUpgrade = async ({
   multisig,
