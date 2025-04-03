@@ -1,6 +1,6 @@
 {
   "name": "squads-program-upgrade",
-  "version": "0.4.2",
+  "version": "0.4.3",
   "private": true,
   "description": "squads-program-upgrade solana deploy action",
   "main": "lib/main.js",
@@ -9,7 +9,7 @@
     "format": "prettier --write '**/*.ts'",
     "format-check": "prettier --check '**/*.ts'",
     "lint": "eslint src/**/*.ts",
-    "package": "export NODE_OPTIONS=--openssl-legacy-provider && ncc build --source-map --license licenses.txt",
+    "package": "export NODE_OPTIONS=--openssl-legacy-provider && ncc build --source-map --license licenses.txt --target es2020",
     "test": "jest",
     "all": "npm run build && npm run format && npm run lint && npm run package && npm test"
   },
@@ -34,9 +34,9 @@
   "devDependencies": {
     "@types/node": "^18.0.0",
     "@typescript-eslint/parser": "^5.0.0",
-    "@vercel/ncc": "^0.31.1",
+    "@vercel/ncc": "^0.36.1",
     "dotenv": "^16.0.3",
-    "eslint": "^7.32.0",
+    "eslint": "^8.40.0",
     "eslint-plugin-github": "^4.3.2",
     "eslint-plugin-jest": "^25.3.2",
     "eslint-plugin-prettier": "^4.2.1",
