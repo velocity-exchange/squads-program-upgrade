@@ -1,15 +1,17 @@
-import {AnchorProvider, BN, Program, Wallet, utils} from '@project-serum/anchor'
-import squadsMpl from './idl/squads_mpl.json'
+import { AnchorProvider, BN, Wallet, utils, Program } from '@coral-xyz/anchor'
+import { sendInstructions } from '@helium/spl-utils'
 import {
   Connection,
   Keypair,
   PublicKey,
   SystemProgram,
-  Transaction
+  TransactionInstruction
 } from '@solana/web3.js'
-import {msProgramId} from './constants'
-import {SquadsMpl} from './idl/squads_mpl'
-import {getAuthorityPDA, getIDLPDA, getIxPDA, getTxPDA} from './pda'
+import { msProgramId } from './constants'
+import { SquadsMpl } from './idl/squads_mpl'
+import squadsMpl from './idl/squads_mpl.json'
+import { getAuthorityPDA, getIDLPDA, getIxPDA, getTxPDA } from './pda'
+import { createResizeAccountInstruction } from './createResizeAccountInstruction'
 
 const SET_IDL_BUFFER_IX_DISCRIMINATOR = '40f4bc78a7e9690a03'
 export const createIdlUpgrade = async ({
@@ -46,7 +48,7 @@ export const createIdlUpgrade = async ({
     multisig: ${multisig.toString()},
     authority: ${authority.toString()},
   `)
-  const tx = new Transaction()
+  const instructions: TransactionInstruction[] = []
   const transactionIndex = new BN(multisigData.transactionIndex + 1, 10)
   const [transactionPDA] = getTxPDA(multisig, transactionIndex, msProgramId)
 
@@ -67,7 +69,7 @@ export const createIdlUpgrade = async ({
       systemProgram: SystemProgram.programId
     })
     .instruction()
-  tx.add(createTransactionIx)
+  instructions.push(createTransactionIx)
 
   // first instruction
   const instructionIndex = 1
@@ -76,6 +78,16 @@ export const createIdlUpgrade = async ({
     new BN(instructionIndex, 10),
     msProgramId
   )
+
+  const idlPDA = await getIDLPDA(programId)
+  const currIdlSize = (await connection.getAccountInfo(idlPDA))!.data.length
+  const bufferSize = (await connection.getAccountInfo(buffer))!.data.length
+
+  // Add some padding in there for the IDL metadata
+  if ((currIdlSize - 200) < bufferSize) {
+    const resizeAccountIx = await createResizeAccountInstruction(programId, wallet.publicKey)
+    instructions.push(resizeAccountIx)
+  }
 
   const addInstructionIx = await program.methods
     .addInstruction({
@@ -87,7 +99,7 @@ export const createIdlUpgrade = async ({
           isWritable: true
         },
         {
-          pubkey: await getIDLPDA(programId),
+          pubkey: idlPDA,
           isSigner: false,
           isWritable: true
         },
@@ -107,7 +119,7 @@ export const createIdlUpgrade = async ({
       systemProgram: SystemProgram.programId
     })
     .instruction()
-  tx.add(addInstructionIx)
+  instructions.push(addInstructionIx)
 
   const activateTransactionIx = await program.methods
     .activateTransaction()
@@ -118,7 +130,7 @@ export const createIdlUpgrade = async ({
       systemProgram: SystemProgram.programId
     })
     .instruction()
-  tx.add(activateTransactionIx)
+  instructions.push(activateTransactionIx)
 
   const approveTransactionIx = await program.methods
     .approveTransaction()
@@ -129,11 +141,17 @@ export const createIdlUpgrade = async ({
       systemProgram: SystemProgram.programId
     })
     .instruction()
-  tx.add(approveTransactionIx)
+  instructions.push(approveTransactionIx)
 
-  const txid =
-    program.provider.sendAndConfirm &&
-    (await program.provider.sendAndConfirm(tx))
+  const provider = new AnchorProvider(
+    connection,
+    new Wallet(wallet),
+    AnchorProvider.defaultOptions()
+  )
+  const txid = await sendInstructions(
+    provider,
+    instructions
+  )
   console.log(
     `Successfully created idl upgrade for authority ${authority.toString()} https://explorer.solana.com/tx/${txid}`
   )

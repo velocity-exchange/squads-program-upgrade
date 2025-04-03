@@ -1,4 +1,4 @@
-import {utils} from '@project-serum/anchor'
+import {utils} from '@coral-xyz/anchor'
 import {Keypair, PublicKey} from '@solana/web3.js'
 
 export const publicKeyFrom = (s: string, n?: string): PublicKey => {
