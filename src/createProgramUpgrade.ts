@@ -1,7 +1,7 @@
 // eslint-disable-next-line filenames/match-regex
 import { AnchorProvider, BN, Wallet } from '@coral-xyz/anchor'
 import NodeWallet from '@coral-xyz/anchor/dist/cjs/nodewallet'
-import { sendInstructions } from '@helium/spl-utils'
+import { batchInstructionsToTxsWithPriorityFee, sendInstructions } from '@helium/spl-utils'
 import {
   Connection,
   Keypair,
@@ -9,6 +9,8 @@ import {
   TransactionInstruction
 } from '@solana/web3.js'
 import Squads from '@sqds/sdk'
+import { createCloseIdlAccountInstruction } from './createCloseIdlAccountInstruction'
+import { createCreateIdlAccountInstruction } from './createCreateIdlAccountInstruction'
 import { createIdlUpgradeInstruction } from './createIdlUpgradeInstruction'
 import { createProgramUpgradeInstruction } from './createProgramUpgradeInstruction'
 import { createResizeAccountInstruction } from './createResizeAccountInstruction'
@@ -44,13 +46,32 @@ export const createProgramUpgrade = async ({
 
   const idlPDA = await getIDLPDA(programId)
   const currIdlSize = (await connection.getAccountInfo(idlPDA))!.data.length
-  const bufferSize = (await connection.getAccountInfo(buffer))!.data.length
+  const idlBufferSize = (await connection.getAccountInfo(idlBuffer))!.data.length
+
+  console.log('Current IDL size:', currIdlSize);
+  console.log('IDL Buffer size:', idlBufferSize);
 
   const instructions: TransactionInstruction[] = []
   // Add some padding in there for the IDL metadata
-  if ((currIdlSize - 200) < bufferSize) {
-    const resizeAccountIx = await createResizeAccountInstruction(programId, authority)
-    instructions.push(resizeAccountIx)
+  if ((currIdlSize - 200) < idlBufferSize) {
+    const idlSize = BigInt(idlBufferSize * 2)
+    console.log('New IDL size:', idlSize.toString());
+
+    // Create initial IDL account with a larger size
+    instructions.push(
+      await createCloseIdlAccountInstruction(programId, authority, authority),
+      await createCreateIdlAccountInstruction(programId, authority, idlSize)
+    );
+
+    // Calculate number of resize operations needed
+    const remainingSize = idlSize - 10000n;
+    const numResizes = Math.ceil(Number(remainingSize) / 10000);
+    console.log('Number of resize operations needed:', numResizes);
+
+    // Add resize instructions in batches
+    for (let i = 0; i < numResizes; i++) {
+      instructions.push(await createResizeAccountInstruction(programId, authority));
+    }
   }
 
   instructions.push(
@@ -76,7 +97,7 @@ export const createProgramUpgrade = async ({
     await squads.buildApproveTransaction(multisig, transactionPDA)
   ]
 
-  const txid = await sendInstructions(
+  const txnDrafts = await batchInstructionsToTxsWithPriorityFee(
     new AnchorProvider(
       connection,
       new Wallet(wallet),
@@ -84,9 +105,18 @@ export const createProgramUpgrade = async ({
     ),
     realIxns
   )
-
-  console.log(
-    `Successfully created program upgrade for MS_PDA ${multisig.toString()} https://explorer.solana.com/tx/${txid}`
-  )
-  return txid
+  const txids: string[] = []
+  for (const txnDraft of txnDrafts) {
+    const txid = await sendInstructions(
+      new AnchorProvider(
+        connection,
+        new Wallet(wallet),
+        AnchorProvider.defaultOptions()
+      ),
+      txnDraft.instructions
+    )
+    txids.push(txid)
+  }
+  console.log(`Successfully created program upgrade for MS_PDA ${multisig.toString()} ${txids.map(txid => `https://explorer.solana.com/tx/${txid}`).join(', ')}`)
+  return txids
 }
