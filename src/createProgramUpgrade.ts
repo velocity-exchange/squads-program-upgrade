@@ -45,8 +45,8 @@ export const createProgramUpgrade = async ({
   )
 
   const idlPDA = await getIDLPDA(programId)
-  const currIdlSize = (await connection.getAccountInfo(idlPDA))!.data.length
-  const idlBufferSize = (await connection.getAccountInfo(idlBuffer))!.data.length
+  const currIdlSize = (await connection.getAccountInfo(idlPDA, "processed"))!.data.length
+  const idlBufferSize = (await connection.getAccountInfo(idlBuffer, "processed"))!.data.length
 
   console.log('Current IDL size:', currIdlSize);
   console.log('IDL Buffer size:', idlBufferSize);

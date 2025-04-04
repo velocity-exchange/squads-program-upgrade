@@ -1,6 +1,6 @@
 {
   "name": "squads-program-upgrade",
-  "version": "0.4.6",
+  "version": "0.4.7",
   "private": true,
   "description": "squads-program-upgrade solana deploy action",
   "main": "lib/main.js",
