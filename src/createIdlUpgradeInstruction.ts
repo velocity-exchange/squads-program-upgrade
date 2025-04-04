@@ -1,5 +1,5 @@
 import {PublicKey, TransactionInstruction} from '@solana/web3.js'
-import {idlAddress} from '@coral-xyz/anchor/dist/cjs/idl'
+import { getIDLPDA } from './pda'
 
 export async function createIdlUpgradeInstruction(
   programId: PublicKey,
@@ -9,7 +9,7 @@ export async function createIdlUpgradeInstruction(
   const prefix = Buffer.from('0a69e9a778bcf440', 'hex')
   const ixn = Buffer.from('03', 'hex')
   const data = Buffer.concat([prefix.reverse(), ixn])
-  const idlAddr = await idlAddress(programId)
+  const idlAddr = await getIDLPDA(programId)
 
   const keys = [
     {

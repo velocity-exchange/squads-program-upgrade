@@ -37,9 +37,9 @@ async function run(): Promise<void> {
       wallet: keypairFrom(keypair, 'keypair'),
       networkUrl
     })
+    console.log('Program upgrade completed successfully')
   } catch (error) {
-    console.log(error)
-    core.debug(`error: ${error}`)
+    console.error('Error during program upgrade:', error)
     if (error instanceof Error) core.setFailed(error.message)
   }
 }
