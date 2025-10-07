@@ -1,23 +1,23 @@
 // eslint-disable-next-line filenames/match-regex
-import { AnchorProvider, BN, Wallet } from '@coral-xyz/anchor'
-import NodeWallet from '@coral-xyz/anchor/dist/cjs/nodewallet'
+import { AnchorProvider, Wallet } from '@coral-xyz/anchor'
 import { batchInstructionsToTxsWithPriorityFee, sendInstructions } from '@helium/spl-utils'
 import {
   Connection,
   Keypair,
   PublicKey,
-  TransactionInstruction
+  TransactionInstruction,
+  TransactionMessage
 } from '@solana/web3.js'
-import Squads from '@sqds/sdk'
+import * as multisig from "@sqds/multisig"
 import { createCloseIdlAccountInstruction } from './createCloseIdlAccountInstruction'
 import { createCreateIdlAccountInstruction } from './createCreateIdlAccountInstruction'
 import { createIdlUpgradeInstruction } from './createIdlUpgradeInstruction'
 import { createProgramUpgradeInstruction } from './createProgramUpgradeInstruction'
 import { createResizeAccountInstruction } from './createResizeAccountInstruction'
-import { getIDLPDA, getTxPDA } from './pda'
+import { getIDLPDA } from './pda'
 
 export const createProgramUpgrade = async ({
-  multisig,
+  multisig: multisigPda,
   programId,
   buffer,
   spill,
@@ -36,13 +36,6 @@ export const createProgramUpgrade = async ({
   networkUrl: string
 }) => {
   const connection = new Connection(networkUrl)
-  const squads = Squads.endpoint(
-    connection.rpcEndpoint,
-    new NodeWallet(wallet),
-    {
-      commitmentOrConfig: 'finalized'
-    }
-  )
 
   const idlPDA = await getIDLPDA(programId)
   const currIdlSize = (await connection.getAccountInfo(idlPDA, "processed"))!.data.length
@@ -79,22 +72,38 @@ export const createProgramUpgrade = async ({
     await createProgramUpgradeInstruction(programId, buffer, authority, spill)
   )
 
-  const nextTransactionIndex = await squads.getNextTransactionIndex(multisig)
-  const [transactionPDA] = getTxPDA(
-    multisig,
-    new BN(nextTransactionIndex, 10),
-    squads.multisigProgramId
-  )
+  const multisigInfo = await multisig.accounts.Multisig.fromAccountAddress(
+    connection,
+    multisigPda
+  );
+
+  const transactionIndex = Number(multisigInfo.transactionIndex);
+  const newTransactionIndex = BigInt(transactionIndex + 1);
+  const message = new TransactionMessage({
+    payerKey: authority,
+    recentBlockhash: (await connection.getLatestBlockhash()).blockhash,
+    instructions,
+  });
+  const transactionCreateIx = await multisig.instructions.vaultTransactionCreate({
+    multisigPda,
+    transactionIndex: newTransactionIndex,
+    creator: wallet.publicKey,
+    vaultIndex: 0,
+    ephemeralSigners: 0,
+    transactionMessage: message,
+    memo: "Upgrade Program " + programId.toString()
+  });
+  const proposalCreateIx = await multisig.instructions.proposalCreate({
+    multisigPda,
+    transactionIndex: newTransactionIndex,
+    // Must have "Voter" permissions at minimum
+    creator: wallet.publicKey,
+  });
+
 
   const realIxns = [
-    await squads.buildCreateTransaction(multisig, 1, nextTransactionIndex),
-    ...(await Promise.all(
-      instructions.map((ix, idx) =>
-        squads.buildAddInstruction(multisig, transactionPDA, ix, idx + 1)
-      )
-    )),
-    await squads.buildActivateTransaction(multisig, transactionPDA),
-    await squads.buildApproveTransaction(multisig, transactionPDA)
+    transactionCreateIx,
+    proposalCreateIx,
   ]
 
   const txnDrafts = await batchInstructionsToTxsWithPriorityFee(
