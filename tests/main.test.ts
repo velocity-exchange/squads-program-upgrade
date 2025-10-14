@@ -25,7 +25,7 @@ test('test runs', () => {
   console.log('Starting test execution...');
   process.env['INPUT_NETWORK-URL'] = 'https://api.devnet.solana.com'
   process.env['INPUT_PROGRAM-MULTISIG'] =
-    'BBhoCZSUJH8iiXHT5aP6GVbhnX2iY2vWR1BAsuYm7ZUm'
+    '7Jsv2aZycozXZJTBLGvRQkWfMTbKBDmk7MrgrAPzryC'
   process.env['INPUT_PROGRAM-ID'] =
     'credMBJhYFzfn7NxBMdU4aUqFggAjgztaCcv2Fo6fPT'
   process.env['INPUT_PROGRAM-INDEX'] = '1'
@@ -34,7 +34,7 @@ test('test runs', () => {
   process.env['INPUT_SPILL-ADDRESS'] =
     'devXCnFPU71StPEFNnGRf4iqXoRpYkNsGEg9m757ktP'
   process.env['INPUT_AUTHORITY'] =
-    'GDrbZVzLubXhQHpYPvi2JfYtEi73YEhiMJB1KuYs1vy'
+    'EwCiHKYRDrHfsaTv7S1Lf49yYbr62oFBaN3MVgzv9NU4'
   process.env['INPUT_NAME'] = 'TEST'
   process.env['INPUT_KEYPAIR'] = process.env.DEPLOYER_KEYPAIR
   const np = process.execPath
