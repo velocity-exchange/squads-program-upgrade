@@ -1,8 +1,8 @@
 {
   "name": "squads-program-upgrade",
-  "version": "0.5.0",
+  "version": "1.0.0",
   "private": true,
-  "description": "squads-program-upgrade solana deploy action",
+  "description": "GitHub Action: propose a Solana program + Anchor 1.0 IDL upgrade via Squads multisig",
   "main": "lib/main.js",
   "scripts": {
     "build": "tsc",
@@ -15,14 +15,16 @@
   },
   "repository": {
     "type": "git",
-    "repository": "git@github.com:cardinal-labs/squads-program-upgrade.git"
+    "url": "git+https://github.com/helium/squads-program-upgrade.git"
   },
   "keywords": [
     "actions",
     "node",
-    "setup"
+    "solana",
+    "anchor",
+    "squads"
   ],
-  "author": "Jeremy Bogle <jeremy@cardinal.so>",
+  "author": "Helium",
   "license": "MIT",
   "dependencies": {
     "@actions/core": "^1.10.0",
