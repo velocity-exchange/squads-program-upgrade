@@ -5,51 +5,77 @@
  * Anchor 1.0 removed the legacy IDL instructions baked into each program
  * (`IdlInstruction::Upgrade`, the `nJWGUMOK`-style discriminator) and moved
  * IDL storage out to a separate `ProgM6JCCvbYkfKqJYHePx4xxSUSqJp7rh8Lyv7nk7S`
- * program. This module hand-rolls the three instructions we need to apply a
- * pre-uploaded IDL buffer through Squads:
- *   - Initialize (disc 1): create the canonical metadata account for ("idl", program)
- *   - SetData    (disc 3): copy a buffer's contents into the metadata account
- *   - Close      (disc 6): close the now-spent buffer and refund rent to a destination
+ * program. The canonical IDL lives in a metadata account at
+ * seeds = [programId, "idl" padded to 16 bytes], whose update authority is the
+ * program's upgrade authority (the Squads vault, in our case).
  *
- * Wire format matches @solana-program/program-metadata@0.5.1.
+ * Applying a pre-staged IDL buffer is NOT a single instruction. Creating the
+ * canonical account from scratch requires the program-metadata program's
+ * five-step sequence — fund rent, Allocate, Extend (in <=10 KiB chunks), Write
+ * (copy the staged buffer in), Initialize — and updating an existing one
+ * requires [fund + Extend if it grew] then SetData. We build those exact
+ * sequences with the official @solana-program/program-metadata instruction
+ * builders (the source of truth for wire format) and convert the resulting
+ * @solana/kit instructions to legacy `TransactionInstruction`s so they can be
+ * wrapped in a Squads vault transaction. All instructions for a given IDL fit
+ * comfortably in one transaction because the data arrives by buffer copy, not
+ * inline.
  */
-import { PublicKey, SystemProgram, TransactionInstruction } from '@solana/web3.js'
+import {
+  Connection,
+  PublicKey,
+  SystemProgram,
+  TransactionInstruction,
+} from "@solana/web3.js";
+import { address, createNoopSigner } from "@solana/kit";
+import * as pm from "@solana-program/program-metadata";
+
+/** Brand a web3.js PublicKey as a @solana/kit Address for the pm builders. */
+const addr = (pk: PublicKey) => address(pk.toBase58());
+
+// The pm builders type `authority` as a TransactionSigner. We never sign here —
+// the Squads vault signs via invoke_signed at execution — so wrap the authority
+// pubkey in a noop signer. This still sets the correct signer role on the
+// generated account meta.
+const noopSigner = (pk: PublicKey) => createNoopSigner(addr(pk));
 
 export const PROGRAM_METADATA_PROGRAM_ID = new PublicKey(
-  'ProgM6JCCvbYkfKqJYHePx4xxSUSqJp7rh8Lyv7nk7S'
-)
+  "ProgM6JCCvbYkfKqJYHePx4xxSUSqJp7rh8Lyv7nk7S"
+);
 
 const BPF_UPGRADE_LOADER_ID = new PublicKey(
-  'BPFLoaderUpgradeab1e11111111111111111111111'
-)
+  "BPFLoaderUpgradeab1e11111111111111111111111"
+);
 
-// program-metadata serializes seeds as fixed-size 16-byte utf8 (zero-padded).
-const IDL_SEED = (() => {
-  const buf = Buffer.alloc(16, 0)
-  buf.write('idl', 0, 'utf8')
-  return buf
-})()
+// program-metadata account layout: 96-byte header followed by the data.
+const ACCOUNT_HEADER_LENGTH = 96;
+// Solana caps a single account resize at MAX_PERMITTED_DATA_INCREASE (10 KiB),
+// so growth beyond that must be split across multiple Extend instructions.
+const REALLOC_LIMIT = 10240;
 
-// program-metadata enum values (match Encoding/Compression/Format/DataSource in the dist js).
-const ENCODING_UTF8 = 1
-const COMPRESSION_ZLIB = 2
-const FORMAT_JSON = 1
-const DATA_SOURCE_DIRECT = 0
+const IDL_SEED = "idl";
 
-const DISC_INITIALIZE = 1
-const DISC_SET_DATA = 3
-const DISC_CLOSE = 6
+// Encoding/Compression/Format the program-metadata CLI uses for an IDL written
+// from a `create-buffer`d JSON (utf8 + zlib + json, stored directly).
+const IDL_DATA_SHAPE = {
+  encoding: pm.Encoding.Utf8,
+  compression: pm.Compression.Zlib,
+  format: pm.Format.Json,
+  dataSource: pm.DataSource.Direct,
+};
 
 /**
  * Canonical metadata PDA — managed by the program's upgrade authority.
  * seeds = [programId, "idl" padded to 16 bytes].
  */
 export function findIdlMetadataPda(programId: PublicKey): PublicKey {
+  const seed = Buffer.alloc(16, 0);
+  seed.write(IDL_SEED, 0, "utf8");
   const [pda] = PublicKey.findProgramAddressSync(
-    [programId.toBuffer(), IDL_SEED],
+    [programId.toBuffer(), seed],
     PROGRAM_METADATA_PROGRAM_ID
-  )
-  return pda
+  );
+  return pda;
 }
 
 /** Program data PDA under the BPF Upgradeable Loader. */
@@ -57,99 +83,217 @@ export function findProgramDataPda(programId: PublicKey): PublicKey {
   const [pda] = PublicKey.findProgramAddressSync(
     [programId.toBuffer()],
     BPF_UPGRADE_LOADER_ID
-  )
-  return pda
+  );
+  return pda;
+}
+
+// @solana/kit AccountRole: 0 READONLY, 1 WRITABLE, 2 READONLY_SIGNER,
+// 3 WRITABLE_SIGNER. The builders mark `authority`/`payer` as non-signers when
+// given a plain address; on-chain they must sign, which the Squads vault does
+// via invoke_signed — so force the signer flag for the authority pubkey.
+function toLegacy(
+  ix: {
+    programAddress: string;
+    accounts: readonly { address: string; role: number }[];
+    data: ArrayLike<number>;
+  },
+  authority: PublicKey
+): TransactionInstruction {
+  return new TransactionInstruction({
+    programId: new PublicKey(ix.programAddress),
+    keys: ix.accounts.map((a) => {
+      const pubkey = new PublicKey(a.address);
+      return {
+        pubkey,
+        isWritable: a.role === 1 || a.role === 3,
+        isSigner: a.role === 2 || a.role === 3 || pubkey.equals(authority),
+      };
+    }),
+    data: Buffer.from(ix.data),
+  });
+}
+
+/** Split a desired byte growth into <=REALLOC_LIMIT chunks. */
+function extendChunks(totalBytes: number): number[] {
+  const chunks: number[] = [];
+  let remaining = totalBytes;
+  while (remaining > 0) {
+    const len = Math.min(REALLOC_LIMIT, remaining);
+    chunks.push(len);
+    remaining -= len;
+  }
+  return chunks;
 }
 
 /**
- * Initialize a canonical IDL metadata account.
- * Authority is the program's upgrade authority (the Squads vault, in our case).
- * Emits Initialize with `data: None` — actual content arrives via SetData(buffer).
+ * Build the instructions that apply a pre-staged IDL buffer to the canonical
+ * metadata account, creating the account first if it doesn't exist yet.
+ *
+ * Does NOT close the buffer — the caller appends `createCloseBufferInstruction`
+ * so the close can refund rent to a chosen spill address.
  */
-export function createInitializeIdlInstruction(
-  programId: PublicKey,
-  authority: PublicKey
-): TransactionInstruction {
-  const metadata = findIdlMetadataPda(programId)
-  const programData = findProgramDataPda(programId)
+export async function buildApplyIdlInstructions({
+  connection,
+  programId,
+  idlBuffer,
+  authority,
+}: {
+  connection: Connection;
+  programId: PublicKey;
+  idlBuffer: PublicKey;
+  authority: PublicKey;
+}): Promise<TransactionInstruction[]> {
+  const metadata = findIdlMetadataPda(programId);
+  const programData = findProgramDataPda(programId);
 
-  // data: disc(1) + seed(16) + encoding(1) + compression(1) + format(1) + dataSource(1)
-  //     + Option<bytes>(no length prefix; None = no trailing bytes)
-  const data = Buffer.concat([
-    Buffer.from([DISC_INITIALIZE]),
-    IDL_SEED,
-    Buffer.from([ENCODING_UTF8, COMPRESSION_ZLIB, FORMAT_JSON, DATA_SOURCE_DIRECT]),
-  ])
+  const bufferAccount = await connection.getAccountInfo(idlBuffer, "confirmed");
+  if (!bufferAccount) {
+    throw new Error(`IDL buffer ${idlBuffer.toBase58()} not found on chain`);
+  }
+  // The staged buffer is itself a program-metadata account: header + the data
+  // we'll copy into the canonical account, so they share the same data length.
+  const dataLength = bufferAccount.data.length - ACCOUNT_HEADER_LENGTH;
+  const requiredAccountSize = ACCOUNT_HEADER_LENGTH + dataLength;
 
-  return new TransactionInstruction({
-    programId: PROGRAM_METADATA_PROGRAM_ID,
-    keys: [
-      { pubkey: metadata, isWritable: true, isSigner: false },
-      { pubkey: authority, isWritable: false, isSigner: true },
-      { pubkey: programId, isWritable: false, isSigner: false },
-      { pubkey: programData, isWritable: false, isSigner: false },
-      { pubkey: SystemProgram.programId, isWritable: false, isSigner: false },
-    ],
-    data,
-  })
-}
+  const common = {
+    metadata: addr(metadata),
+    authority: noopSigner(authority),
+    program: addr(programId),
+    programData: addr(programData),
+  };
 
-/**
- * Apply a pre-staged buffer to the canonical IDL metadata account.
- * Requires `Initialize` to have happened in a previous transaction (or
- * earlier in this same Squads transaction).
- */
-export function createSetDataIdlInstruction(
-  programId: PublicKey,
-  buffer: PublicKey,
-  authority: PublicKey
-): TransactionInstruction {
-  const metadata = findIdlMetadataPda(programId)
-  const programData = findProgramDataPda(programId)
+  const ixs: TransactionInstruction[] = [];
+  const metadataAccount = await connection.getAccountInfo(
+    metadata,
+    "confirmed"
+  );
 
-  // data: disc(1) + encoding(1) + compression(1) + format(1) + dataSource(1)
-  //     + Option<bytes>(no length prefix; None when applying from buffer)
-  const data = Buffer.from([
-    DISC_SET_DATA,
-    ENCODING_UTF8,
-    COMPRESSION_ZLIB,
-    FORMAT_JSON,
-    DATA_SOURCE_DIRECT,
-  ])
+  if (!metadataAccount) {
+    console.log(
+      `IDL metadata PDA ${metadata.toBase58()} not initialized; create flow (fund + allocate + extend + write + initialize).`
+    );
+    const rent = await connection.getMinimumBalanceForRentExemption(
+      requiredAccountSize
+    );
+    ixs.push(
+      SystemProgram.transfer({
+        fromPubkey: authority,
+        toPubkey: metadata,
+        lamports: rent,
+      })
+    );
+    ixs.push(
+      toLegacy(
+        pm.getAllocateInstruction({
+          buffer: common.metadata,
+          authority: common.authority,
+          program: common.program,
+          programData: common.programData,
+          seed: IDL_SEED,
+        }),
+        authority
+      )
+    );
+    for (const length of extendChunks(dataLength)) {
+      ixs.push(
+        toLegacy(
+          pm.getExtendInstruction({
+            account: common.metadata,
+            authority: common.authority,
+            program: common.program,
+            programData: common.programData,
+            length,
+          }),
+          authority
+        )
+      );
+    }
+    ixs.push(
+      toLegacy(
+        pm.getWriteInstruction({
+          buffer: common.metadata,
+          authority: common.authority,
+          sourceBuffer: addr(idlBuffer),
+          offset: 0,
+        }),
+        authority
+      )
+    );
+    ixs.push(
+      toLegacy(
+        pm.getInitializeInstruction({
+          ...common,
+          system: addr(PROGRAM_METADATA_PROGRAM_ID),
+          seed: IDL_SEED,
+          ...IDL_DATA_SHAPE,
+        }),
+        authority
+      )
+    );
+  } else {
+    console.log(
+      `IDL metadata PDA ${metadata.toBase58()} exists; update flow (grow if needed + set-data).`
+    );
+    const sizeDifference = requiredAccountSize - metadataAccount.data.length;
+    if (sizeDifference > 0) {
+      const [newRent, currentRent] = await Promise.all([
+        connection.getMinimumBalanceForRentExemption(requiredAccountSize),
+        connection.getMinimumBalanceForRentExemption(
+          metadataAccount.data.length
+        ),
+      ]);
+      ixs.push(
+        SystemProgram.transfer({
+          fromPubkey: authority,
+          toPubkey: metadata,
+          lamports: newRent - currentRent,
+        })
+      );
+      for (const length of extendChunks(sizeDifference)) {
+        ixs.push(
+          toLegacy(
+            pm.getExtendInstruction({
+              account: common.metadata,
+              authority: common.authority,
+              program: common.program,
+              programData: common.programData,
+              length,
+            }),
+            authority
+          )
+        );
+      }
+    }
+    ixs.push(
+      toLegacy(
+        pm.getSetDataInstruction({
+          ...common,
+          buffer: addr(idlBuffer),
+          ...IDL_DATA_SHAPE,
+        }),
+        authority
+      )
+    );
+  }
 
-  return new TransactionInstruction({
-    programId: PROGRAM_METADATA_PROGRAM_ID,
-    keys: [
-      { pubkey: metadata, isWritable: true, isSigner: false },
-      { pubkey: authority, isWritable: false, isSigner: true },
-      { pubkey: buffer, isWritable: true, isSigner: false },
-      { pubkey: programId, isWritable: false, isSigner: false },
-      { pubkey: programData, isWritable: false, isSigner: false },
-    ],
-    data,
-  })
+  return ixs;
 }
 
 /**
  * Close a metadata buffer account, refunding rent to `destination`.
- * Used after SetData to recover the buffer's rent (~0.01 SOL for typical IDLs).
+ * Used after the IDL is applied to recover the staged buffer's rent.
  */
 export function createCloseBufferInstruction(
   buffer: PublicKey,
   authority: PublicKey,
   destination: PublicKey
 ): TransactionInstruction {
-  return new TransactionInstruction({
-    programId: PROGRAM_METADATA_PROGRAM_ID,
-    keys: [
-      { pubkey: buffer, isWritable: true, isSigner: false },
-      { pubkey: authority, isWritable: false, isSigner: true },
-      // program / programData are optional; pass the program-metadata-program id
-      // as the "None" sentinel (matches @solana-program/program-metadata wire).
-      { pubkey: PROGRAM_METADATA_PROGRAM_ID, isWritable: false, isSigner: false },
-      { pubkey: PROGRAM_METADATA_PROGRAM_ID, isWritable: false, isSigner: false },
-      { pubkey: destination, isWritable: true, isSigner: false },
-    ],
-    data: Buffer.from([DISC_CLOSE]),
-  })
+  return toLegacy(
+    pm.getCloseInstruction({
+      account: addr(buffer),
+      authority: noopSigner(authority),
+      destination: addr(destination),
+    }),
+    authority
+  );
 }
