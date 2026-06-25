@@ -25,14 +25,21 @@ async function run(): Promise<void> {
     core.debug(`idlBuffer: ${idlBuffer}`)
     core.debug(`keypair: **********`)
 
+    const wallet = keypairFrom(keypair, 'keypair')
+    // spill-address is optional: reclaimed buffer rent defaults to the
+    // proposer's own pubkey when no explicit recipient is provided.
+    const spill = spillAddress
+      ? publicKeyFrom(spillAddress, 'spillAddress')
+      : wallet.publicKey
+
     await createProgramUpgrade({
       multisig: publicKeyFrom(programMultisig, 'programMultisig'),
       programId: publicKeyFrom(programId, 'programId'),
       buffer: publicKeyFrom(buffer, 'buffer'),
       idlBuffer: idlBuffer ? publicKeyFrom(idlBuffer, 'idl-buffer') : undefined,
-      spill: publicKeyFrom(spillAddress, 'spillAddress'),
+      spill,
       authority: publicKeyFrom(authority, 'authority'),
-      wallet: keypairFrom(keypair, 'keypair'),
+      wallet,
       networkUrl,
       name,
     })

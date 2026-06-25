@@ -19,8 +19,8 @@ inputs:
     description: "Program buffer account (already authority-transferred to the multisig vault)"
     required: true
   spill-address:
-    description: "Address that receives reclaimed buffer rent"
-    required: true
+    description: "Address that receives reclaimed buffer rent. Defaults to the proposer keypair's pubkey when omitted."
+    required: false
   authority:
     description: "Upgrade authority (the Squads vault PDA)"
     required: true
