@@ -127,12 +127,22 @@ function extendChunks(totalBytes: number): number[] {
 
 /**
  * Build the instructions that apply a pre-staged IDL buffer to the canonical
- * metadata account, creating the account first if it doesn't exist yet.
+ * metadata account, creating the account first if it doesn't exist yet —
+ * grouped into per-transaction chunks.
  *
- * Does NOT close the buffer — the caller appends `createCloseBufferInstruction`
- * so the close can refund rent to a chosen spill address.
+ * Each returned inner array is one transaction's worth of instructions, sized
+ * so its total account growth is <= REALLOC_LIMIT. That bound matters because
+ * the Squads vault executes every instruction via CPI, and the runtime caps
+ * cumulative account-data growth at 10 KiB *per transaction* for inner
+ * instructions ("realloc limited to 10240 in inner instructions"). A large IDL
+ * therefore can't be created in one transaction — the `Extend`s must be spread
+ * across several, which the caller wraps in a Squads batch (one proposal, many
+ * executed transactions).
+ *
+ * Does NOT close the buffer or upgrade the program — the caller appends those
+ * (neither reallocs) to the final group.
  */
-export async function buildApplyIdlInstructions({
+export async function buildApplyIdlInstructionGroups({
   connection,
   programId,
   idlBuffer,
@@ -142,7 +152,7 @@ export async function buildApplyIdlInstructions({
   programId: PublicKey;
   idlBuffer: PublicKey;
   authority: PublicKey;
-}): Promise<TransactionInstruction[]> {
+}): Promise<TransactionInstruction[][]> {
   const metadata = findIdlMetadataPda(programId);
   const programData = findProgramDataPda(programId);
 
@@ -162,7 +172,19 @@ export async function buildApplyIdlInstructions({
     programData: addr(programData),
   };
 
-  const ixs: TransactionInstruction[] = [];
+  const extendIx = (length: number) =>
+    toLegacy(
+      pm.getExtendInstruction({
+        account: common.metadata,
+        authority: common.authority,
+        program: common.program,
+        programData: common.programData,
+        length,
+      }),
+      authority
+    );
+
+  const groups: TransactionInstruction[][] = [];
   const metadataAccount = await connection.getAccountInfo(
     metadata,
     "confirmed"
@@ -170,19 +192,20 @@ export async function buildApplyIdlInstructions({
 
   if (!metadataAccount) {
     console.log(
-      `IDL metadata PDA ${metadata.toBase58()} not initialized; create flow (fund + allocate + extend + write + initialize).`
+      `IDL metadata PDA ${metadata.toBase58()} not initialized; create flow (fund + allocate + extend*${
+        extendChunks(dataLength).length
+      } + write + initialize).`
     );
     const rent = await connection.getMinimumBalanceForRentExemption(
       requiredAccountSize
     );
-    ixs.push(
+    // Group 1: fund the account's rent and allocate the header.
+    groups.push([
       SystemProgram.transfer({
         fromPubkey: authority,
         toPubkey: metadata,
         lamports: rent,
-      })
-    );
-    ixs.push(
+      }),
       toLegacy(
         pm.getAllocateInstruction({
           buffer: common.metadata,
@@ -192,23 +215,15 @@ export async function buildApplyIdlInstructions({
           seed: IDL_SEED,
         }),
         authority
-      )
-    );
+      ),
+    ]);
+    // One Extend per transaction (each chunk is <= REALLOC_LIMIT).
     for (const length of extendChunks(dataLength)) {
-      ixs.push(
-        toLegacy(
-          pm.getExtendInstruction({
-            account: common.metadata,
-            authority: common.authority,
-            program: common.program,
-            programData: common.programData,
-            length,
-          }),
-          authority
-        )
-      );
+      groups.push([extendIx(length)]);
     }
-    ixs.push(
+    // Final group: copy the buffer in and initialize the header. Neither
+    // reallocs, so the caller can safely append close + upgrade here.
+    groups.push([
       toLegacy(
         pm.getWriteInstruction({
           buffer: common.metadata,
@@ -217,9 +232,7 @@ export async function buildApplyIdlInstructions({
           offset: 0,
         }),
         authority
-      )
-    );
-    ixs.push(
+      ),
       toLegacy(
         pm.getInitializeInstruction({
           ...common,
@@ -228,13 +241,16 @@ export async function buildApplyIdlInstructions({
           ...IDL_DATA_SHAPE,
         }),
         authority
-      )
-    );
+      ),
+    ]);
   } else {
-    console.log(
-      `IDL metadata PDA ${metadata.toBase58()} exists; update flow (grow if needed + set-data).`
-    );
     const sizeDifference = requiredAccountSize - metadataAccount.data.length;
+    console.log(
+      `IDL metadata PDA ${metadata.toBase58()} exists; update flow (grow ${Math.max(
+        sizeDifference,
+        0
+      )}B + set-data).`
+    );
     if (sizeDifference > 0) {
       const [newRent, currentRent] = await Promise.all([
         connection.getMinimumBalanceForRentExemption(requiredAccountSize),
@@ -242,29 +258,20 @@ export async function buildApplyIdlInstructions({
           metadataAccount.data.length
         ),
       ]);
-      ixs.push(
+      groups.push([
         SystemProgram.transfer({
           fromPubkey: authority,
           toPubkey: metadata,
           lamports: newRent - currentRent,
-        })
-      );
+        }),
+      ]);
       for (const length of extendChunks(sizeDifference)) {
-        ixs.push(
-          toLegacy(
-            pm.getExtendInstruction({
-              account: common.metadata,
-              authority: common.authority,
-              program: common.program,
-              programData: common.programData,
-              length,
-            }),
-            authority
-          )
-        );
+        groups.push([extendIx(length)]);
       }
     }
-    ixs.push(
+    // Final group: apply the buffer. SetData doesn't realloc (the account is
+    // already grown), so close + upgrade can be appended here.
+    groups.push([
       toLegacy(
         pm.getSetDataInstruction({
           ...common,
@@ -272,11 +279,11 @@ export async function buildApplyIdlInstructions({
           ...IDL_DATA_SHAPE,
         }),
         authority
-      )
-    );
+      ),
+    ]);
   }
 
-  return ixs;
+  return groups;
 }
 
 /**
