@@ -1,44 +1,38 @@
-name: 'Squads program upgrade'
-description: 'Github action to deploy a squads program upgrade on Solana'
-author: 'Cardinal Labs'
+name: "Squads program upgrade"
+description: "Propose a Solana program (and Anchor 1.0 IDL) upgrade through a Squads multisig"
+author: "Helium"
 branding:
-  icon: 'upload'
-  color: 'red'
+  icon: "upload"
+  color: "red"
 inputs:
   network-url:
-    description: 'The Solana network'
+    description: "The Solana RPC URL"
     required: true
-    default: 'devnet'
+    default: "devnet"
   program-multisig:
-    description: 'The program multisig authority'
+    description: "The Squads multisig PDA"
     required: true
   program-id:
-    description: 'The program id to upgrade'
-    required: true
-  program-index:
-    description: 'The program index to upgrade'
+    description: "The program id to upgrade"
     required: true
   buffer:
-    description: 'The buffer where the program is uploaded to'
+    description: "Program buffer account (already authority-transferred to the multisig vault)"
     required: true
   spill-address:
-    description: 'The program multisig authority'
+    description: "Address that receives reclaimed buffer rent"
     required: true
   authority:
-    description: 'The upgrade authority'
+    description: "Upgrade authority (the Squads vault PDA)"
     required: true
   name:
-    description: 'The name of this upgrade'
+    description: "Squads transaction memo"
     required: true
   idl-buffer:
-    description: 'The IDL buffer to upgrade for the corresponding program'
-    required: false
-  authority-index:
-    description: 'The index that the authority key is in this multisig (defaults to 1)'
+    description: "IDL buffer (program-metadata-program buffer account, authority = vault). Omit to skip IDL update."
     required: false
   keypair:
-    description: 'The keypair to use for deploys'
+    description: "Proposer keypair (base58, JSON array, or path to keypair file) — must be a multisig member with Voter permissions"
     required: true
 runs:
-  using: 'node16'
-  main: 'dist/index.js'
+  using: "node20"
+  main: "dist/index.js"

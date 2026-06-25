@@ -13,7 +13,6 @@ async function run(): Promise<void> {
     const name: string = core.getInput('name')
     const keypair: string = core.getInput('keypair')
     const idlBuffer: string = core.getInput('idl-buffer')
-    const authorityIndex: string = core.getInput('authority-index')
 
     core.debug(`start: ${new Date().toLocaleString()}`)
     core.debug(`networkUrl: ${networkUrl}`)
@@ -24,20 +23,20 @@ async function run(): Promise<void> {
     core.debug(`authority: ${authority}`)
     core.debug(`name: ${name}`)
     core.debug(`idlBuffer: ${idlBuffer}`)
-    core.debug(`authorityIndex: ${authorityIndex}`)
     core.debug(`keypair: **********`)
 
     await createProgramUpgrade({
       multisig: publicKeyFrom(programMultisig, 'programMultisig'),
       programId: publicKeyFrom(programId, 'programId'),
       buffer: publicKeyFrom(buffer, 'buffer'),
-      idlBuffer: publicKeyFrom(idlBuffer, 'idl-buffer'),
+      idlBuffer: idlBuffer ? publicKeyFrom(idlBuffer, 'idl-buffer') : undefined,
       spill: publicKeyFrom(spillAddress, 'spillAddress'),
       authority: publicKeyFrom(authority, 'authority'),
       wallet: keypairFrom(keypair, 'keypair'),
-      networkUrl
+      networkUrl,
+      name,
     })
-    console.log('Program upgrade completed successfully')
+    console.log('Program upgrade proposal created successfully')
   } catch (error) {
     console.error('Error during program upgrade:', error)
     if (error instanceof Error) core.setFailed(error.message)
